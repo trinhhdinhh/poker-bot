@@ -1,7 +1,8 @@
 """Decide an action.
 
-Later: look up the trained strategy table; if the spot is missing, fall back to a rule
-(call/raise when equity beats pot odds, else fold/check). For now only a placeholder
+Later: load the DMC Q-network (training/model.py), score Q(state, action) for every legal
+menu action (features/), and play the argmax. If no model is loaded or it fails, fall back to a
+rule (call/raise when equity beats pot odds, else fold/check). For now only a placeholder
 policy exists so the connection infrastructure can be exercised end to end.
 """
 from __future__ import annotations

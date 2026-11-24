@@ -1,8 +1,9 @@
 # CLAUDE.md
 
 ## Project
-AI course group project: a poker bot trained with **Counterfactual Regret Minimization (CFR)**
-that plays on the class server **Bayou Poker Server** (https://github.com/binaya07/ai-poker-server).
+AI course group project: a poker bot trained with **Deep Monte Carlo (DMC) reinforcement learning**
+(self-play + a neural Q-network, in the style of DouZero) that plays on the class server
+**Bayou Poker Server** (https://github.com/binaya07/ai-poker-server).
 The only goal is to win on that server. We train directly on No-Limit Hold'em — no toy games
 (Kuhn, Leduc, etc.).
 
@@ -12,62 +13,74 @@ The only goal is to win on that server. We train directly on No-Limit Hold'em �
   the winner is the highest cumulative `profit_loss` over the match (`max_hands`, default 100).
 - **Turn timeout: 5 s by default** (`turn_timeout_seconds` in the server's `config.toml`; the class server may differ).
   On timeout the server checks if legal, otherwise folds.
-  → All CFR training happens **offline**. At play time the bot only does a fast lookup + light computation.
+  → All training happens **offline**. At play time the bot only encodes the state and runs one small forward pass.
 - Disconnecting folds a live hand; rejoining with the same id keeps the seat and closes the old socket (code 4001).
 
 ## How it works
-1. **Abstraction** shrinks Hold'em to a size CFR can handle (cards → buckets, bets → a small menu).
-2. **Offline training**: MCCFR plays the abstracted game against itself and saves a strategy table.
-3. **Live play**: the bot turns server JSON into the same abstract key, looks up the table, and sends
-   a legal action. No learning at play time.
+1. **Features** turn a game state into a fixed-size vector (raw cards, money in big blinds, position,
+   betting history) and each menu action into its own vector. No card bucketing — the network learns it.
+2. **Offline training (DMC)**: bots play hands against each other in `engine/`. Each hand is one episode
+   (stacks reset every hand, so hands are independent). Every decision is labelled with that seat's final
+   chip result for the hand (in big blinds), and a network Q(state, action) is fitted to those returns
+   with MSE. Actors explore with epsilon-greedy. Opponents: mostly the current network, plus rule-based
+   bots and older checkpoints.
+3. **Live play**: the bot builds the same features from server JSON, scores every legal menu action
+   with the network, plays the best one, and maps it to a legal server action. No learning at play time.
 
 ## Repo layout
 | Path | Purpose |
 |---|---|
 | `bot/` | **Live server client** — connects to the server and plays |
-| `abstraction/` | Card + action abstraction, **shared by training and the bot** |
-| `engine/` | Offline No-Limit Hold'em simulator matching the server's rules |
-| `training/` | MCCFR and the training entry point |
+| `features/` | State + action encoding and the action menu, **shared by training and the bot** |
+| `engine/` | Offline No-Limit Hold'em simulator matching the server's rules (runs self-play) |
+| `training/` | DMC self-play, the Q-network, and the training entry point |
 | `eval/` | Offline matches between bots, win rate in mbb/hand |
-| `tests/` | Unit tests |
-| `results/checkpoints/` | Trained strategy tables — git-ignored |
+| `tests/` | Unit tests + an integration test against the real server |
+| `results/checkpoints/` | Trained models (`.pt`) — git-ignored |
 
-### `bot/`
-- `client.py` — WebSocket loop: join, read `state` / `action_result` / `error`, act only on our turn.
-  Base it on the server's `scripts/student_bot.py` (dedupe repeated broadcasts, track `pending`).
-- `adapter.py` — server JSON → observation (hole cards, board, pot, to-call, position, street, stacks)
-  and the abstract infoset key (via `abstraction/`).
-- `policy.py` — loads the strategy table and picks an action; falls back to an equity-vs-pot-odds
-  rule when the spot isn't in the table.
-- `action_map.py` — abstract action (fold / check-call / ½ pot / pot / all-in) → a **legal** server action.
+### `bot/` (done: connection infrastructure, see build step 1)
+- `client.py` — WebSocket loop. `BotSession` (no I/O, unit-tested) dedupes repeated broadcasts, tracks
+  `pending`, runs the policy under a 2 s timeout, falls back after rejections; `BotClient` owns the
+  socket and reconnects. Run: `python -m bot.client group-1 [--url ...] [--hands N] [-v]`.
+- `adapter.py` — server JSON → `Observation` (hole cards, board, pot, to-call, position, stacks) and
+  `HandHistory` built from successive states; `encode_state` will call `features/`.
+- `policy.py` — `Policy` interface. Today: `CheckCallPolicy`. Later: load the Q-network, take the argmax
+  over legal menu actions; fall back to an equity-vs-pot-odds rule if no model or on error.
+- `action_map.py` — menu action → a **legal** server action (clamps raise sizes, handles all-ins).
 
-### `abstraction/`
-- `cards.py` — preflop: 169 canonical hands (AKs, 72o, …); postflop: equity buckets.
-- `actions.py` — the action menu, and mapping opponents' off-menu bet sizes to the nearest abstract size.
+### `features/`
+- `encoding.py` — state → float vector: one-hot hole cards and board (52 each), street, players dealt in /
+  still active, position from the button, pot / to-call / stacks / bets in big blinds (opponents padded
+  to max seats), last K betting actions. Carries `ENCODING_VERSION`.
+- `actions.py` — action menu (fold, check/call, raise ½ pot, pot, 2× pot, all-in), legal-menu filtering,
+  action encoding, and raise targets in server terms.
 
 ### `engine/`
-- `holdem.py` — simulator with server rules (stack 1000, blinds 10/20, min-raise, all-ins, side pots).
-  Prefer wrapping an existing library (e.g. PokerKit) over writing one; verify it matches the server.
+- `holdem.py` — simulator with server rules (stack 1000 every hand, blinds 10/20, min-raise, short all-ins,
+  side pots). Must be fast: self-play needs millions of hands. Prefer wrapping an existing library
+  (e.g. PokerKit) over writing one; verify it matches the server.
 
 ### `training/`
-- `mccfr.py` — external-sampling Monte Carlo CFR on the abstracted game, 3+ players.
-- `train.py` — runs training, saves the table to `results/checkpoints/`. Run: `python -m training.train`.
+- `model.py` — MLP: concat(state, action) → expected return in big blinds. Shared with `bot/policy.py`.
+- `dmc.py` — actors (epsilon-greedy self-play in `engine/`) + learner (MSE on Monte Carlo returns),
+  opponent pool of current/older networks and rule-based bots.
+- `train.py` — runs training, saves checkpoints to `results/checkpoints/`. Run: `python -m training.train`.
 
 ### `eval/`
-- `match.py` — play many hands offline between bots (trained vs rule-based, random, always-call);
-  report mbb/hand with a confidence interval, rotating seats.
+- `match.py` — play many hands offline between bots (DMC model vs rule-based, always-call, random,
+  older checkpoints); report mbb/hand with a confidence interval, rotating seats.
 
 ## Build order
 | Step | What | Done when |
 |---|---|---|
-| 1 | `bot/` with the rule-based policy | Plays full sessions on a local server, no illegal moves or timeouts |
-| 2 | `engine/` | Hands resolve exactly like on the server |
-| 3 | `abstraction/` | Unit-tested and fast enough to run every turn |
-| 4 | `training/` | Strategy table saved |
-| 5 | `eval/` | Trained bot beats the rule-based bot offline |
-| 6 | Load the table in `bot/policy.py` (rule-based stays as fallback) | Beats the demo bots on the local server |
+| 1 | `bot/` connection + rule-based policy | Plays full sessions on a local server, no illegal moves or timeouts (connection ✅, rule policy TODO) |
+| 2 | `engine/` | Hands resolve exactly like on the server; fast enough for self-play |
+| 3 | `features/` | Unit-tested; the same `Observation` gives the same vector from engine and from server JSON |
+| 4 | `training/` | DMC loss goes down; checkpoints saved |
+| 5 | `eval/` | Trained bot beats the rule-based and always-call bots offline |
+| 6 | Load the model in `bot/policy.py` (rule-based stays as fallback) | Beats the demo bots on the local server |
 
-Steps 1 and 2–3 can be built in parallel. Start training small (few buckets, 3 players) and scale up.
+Steps 1 and 2–3 can be built in parallel. Start small (3 players, small MLP, short runs) and scale up.
 
 ## Server protocol (essentials)
 - Connect: `ws://localhost:8000/ws` (Docker: `ws://poker-server:8000/ws`).
@@ -84,19 +97,27 @@ Steps 1 and 2–3 can be built in parallel. Start training small (few buckets, 3
 - Invalid actions are rejected without changing anything. Never retry the same invalid move; fall back to call/check/fold.
 
 ## Key design decisions
-- **Training and the bot must use the same `abstraction/` code.** If bucketing differs even slightly,
-  the bot looks up the wrong strategy with no error. Never duplicate abstraction logic in `bot/`.
-- Action abstraction: fold, check/call, ½ pot, pot, all-in. Opponents' other sizes map to the nearest one.
-- CFR's theoretical guarantees only hold heads-up. For multiway pots we train MCCFR anyway
-  (works well in practice, as in Pluribus) and fall back to the equity rule where the table has no data.
-- **Safety net:** every decision must return within ~2 seconds. Wrap policy calls in a timeout;
-  on any error or timeout, check if legal, otherwise fold (or call if to-call is tiny).
+- **Training and the bot must use the same `features/` code.** If the encoding differs even slightly, the
+  network sees garbage with no error. Never duplicate feature logic in `bot/`. Models are saved with
+  `ENCODING_VERSION`; the bot refuses a model whose version doesn't match.
+- **Engine and live play must produce the same `Observation`.** Write `features/` against `Observation`
+  (from `bot/adapter.py`) and have `engine/` produce it too, so there is one encoding path.
+- Action menu: fold, check/call, ½ pot, pot, 2× pot, all-in. Opponents' real bet sizes go into the
+  history features as pot fractions (no rounding to the menu needed).
+- Reward = chips won minus chips put in for the hand, in big blinds — exactly what the server ranks on.
+  Monte Carlo returns are high-variance; use many hands, and consider subtracting a baseline later.
+- Pure self-play can learn exploitable habits; keep rule-based bots and older checkpoints in the
+  opponent pool and track win rate against them in `eval/`.
+- **Safety net:** every decision must return within ~2 seconds. Policy calls run under a timeout;
+  on any error or timeout, check if legal, call if to-call ≤ 1 BB, otherwise fold.
 
 ## Conventions
-- Python 3.11+. `pip install -r requirements.txt`. Add libraries there as they're adopted (e.g. `numpy`, `pokerkit`).
+- Python 3.11+. `pip install -r requirements.txt`. Add libraries there as they're adopted
+  (expected: `numpy`, `torch` for the network, maybe `pokerkit` for the engine). Inference runs on CPU.
 - Feature branches + PR with one reviewer; `pytest` must pass before merge.
-- Don't commit trained tables or logs; share checkpoints out-of-band if large.
-- Changes to `abstraction/` affect both training and the bot — they need group agreement and invalidate old tables.
+- Don't commit trained models or logs; share checkpoints out-of-band if large.
+- Changes to `features/` affect both training and the bot — they need group agreement, a bump of
+  `ENCODING_VERSION`, and invalidate old models.
 
 ## Running against the server locally
 ```sh

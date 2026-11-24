@@ -1,7 +1,7 @@
 """Server JSON -> observation (hole cards, board, pot, to_call, position, street, stacks).
 
-Pure parsing, no I/O. Later this module will call abstraction/ to produce the same
-infoset key the trainer uses (see `infoset_key`). Never duplicate abstraction logic here.
+Pure parsing, no I/O. Later this module will call features/ to produce the same
+state vector the trainer uses (see `encode_state`). Never duplicate feature logic here.
 """
 from __future__ import annotations
 
@@ -164,6 +164,6 @@ class HandHistory:
         return [e for e in self.events if e.get("street") == street]
 
 
-def infoset_key(obs: Observation, history: HandHistory) -> str:
-    """Abstract infoset key shared with training. Implemented in abstraction/ (build step 3)."""
-    raise NotImplementedError("Card/action abstraction not implemented yet")
+def encode_state(obs: Observation, history: HandHistory):
+    """Q-network input features, shared with training. Implemented in features/encoding.py."""
+    raise NotImplementedError("State encoding not implemented yet")

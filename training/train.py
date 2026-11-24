@@ -1,4 +1,4 @@
-"""Training entry point: run MCCFR and save the strategy table to results/checkpoints/.
+"""Training entry point: run DMC self-play and save model checkpoints to results/checkpoints/.
 
 Run: python -m training.train
 """

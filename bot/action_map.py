@@ -1,4 +1,4 @@
-"""Abstract action (fold / check-call / raise to X) -> a legal server action.
+"""Menu action (fold / check-call / raise to X, see features/actions.py) -> a legal server action.
 
 Server rules (ai-poker-server README + app/engine.py place_action):
 - bet/raise `amount` = total for this street (int), in [current_bet + minimum_raise, my.bet + my.stack];
