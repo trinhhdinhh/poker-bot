@@ -8,10 +8,12 @@ The only goal is to win on that server. We train directly on No-Limit Hold'em �
 
 ## The target game (from the server — this is what the bot must actually play)
 - **No-Limit Texas Hold'em**, multiplayer (server allows up to 20 seats; expect 3+ bots, not heads-up).
-- Starting stack **1000**, blinds **10/20** → 50 big blinds deep.
-- **15-second turn timeout**. On timeout the server checks if legal, otherwise folds.
+- Starting stack **1000**, blinds **10/20** → 50 big blinds deep. **Every hand starts with a fresh 1000**;
+  the winner is the highest cumulative `profit_loss` over the match (`max_hands`, default 100).
+- **Turn timeout: 5 s by default** (`turn_timeout_seconds` in the server's `config.toml`; the class server may differ).
+  On timeout the server checks if legal, otherwise folds.
   → All CFR training happens **offline**. At play time the bot only does a fast lookup + light computation.
-- Players with zero chips sit out; disconnecting folds a live hand.
+- Disconnecting folds a live hand; rejoining with the same id keeps the seat and closes the old socket (code 4001).
 
 ## How it works
 1. **Abstraction** shrinks Hold'em to a size CFR can handle (cards → buckets, bets → a small menu).
@@ -104,4 +106,8 @@ python -m uvicorn app.server:app --host 0.0.0.0 --port 8000
 python -m bot.client group-1
 python scripts/demo_bots.py   # from the server repo, for opponents
 ```
-Then open http://localhost:8000 and click **Start**.
+Then open http://localhost:8000 and click **Start** (or `demo_bots.py --auto-start` to deal automatically).
+
+The server repo is cloned (git-ignored) at `./ai-poker-server/`. `pip install -r requirements-dev.txt` adds its
+deps; then `pytest` also runs `tests/test_integration_server.py`, which starts the real server, connects three of
+our bots, deals hands via an observer's `start_hand`, and asserts no rejected actions or timeouts.

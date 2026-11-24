@@ -1,0 +1,6 @@
+# Needed only to run the Bayou Poker Server locally (integration tests / manual play).
+# The server repo pins fastapi==0.115.0 etc.; newer versions are used here for Python 3.14 support.
+-r requirements.txt
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.27

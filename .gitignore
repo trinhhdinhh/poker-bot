@@ -6,3 +6,4 @@ results/*
 !results/checkpoints/
 results/checkpoints/*
 !results/checkpoints/.gitkeep
+ai-poker-server/
