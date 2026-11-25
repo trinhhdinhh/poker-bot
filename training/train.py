@@ -2,3 +2,6 @@
 
 Run: python -m training.train
 """
+
+def train(num_hands, lr=3e-4):
+    pass
