@@ -56,9 +56,22 @@ The only goal is to win on that server. We train directly on No-Limit Hold'em �
   action encoding, and raise targets in server terms.
 
 ### `engine/`
-- `holdem.py` — simulator with server rules (stack 1000 every hand, blinds 10/20, min-raise, short all-ins,
-  side pots). Must be fast: self-play needs millions of hands. Prefer wrapping an existing library
-  (e.g. PokerKit) over writing one; verify it matches the server.
+- `holdem.py` — `HoldemHand(n_players, button, rng)`: one hand with server rules, built on **PokerKit**
+  (cash-game mode, so folding when a check is free is allowed, as on the server). Our seats 0..n-1 ↔
+  PokerKit indices via `seat_of`/`index_of`. We deal and burn from our own seeded deck in the server's
+  order. API: `current_seat`, `legal_actions()` (→ `bot.action_map.Legal`), `act("fold|check|call|bet|raise",
+  amount)` (amount = street total; illegal → `ValueError`, nothing changes), `events` (same shape as
+  `bot.adapter.HandHistory.events`), `observation(seat)` (→ `bot.adapter.Observation`), `results()` (chips
+  per seat = the DMC reward). `results()` settles pots **ourselves**, layer by layer like the server, because
+  PokerKit hands out odd chips differently. PokerKit's showdown automations are off (they were 76% of run time):
+  the hand is over when betting ends, and we deal any remaining board ourselves. `minimum_raise` is also
+  tracked by us, as the server does. Speed: ~4,000 hands/s at 6 players (`python -m engine.bench`).
+- `cards.py` — `FULL_DECK`, `shuffled_deck(rng)`, `to_pk(card)`. `evaluator.py` — 7-card hand score, identical
+  to the server's `evaluate_best_hand` (used by `results()` and the rule-based bot).
+- `bench.py` — `random_move` (random legal player) and `python -m engine.bench` (hands/s).
+- Verified by `tests/test_engine_vs_server.py`: random hands in our engine and the server's `app/engine.py`
+  side by side, compared after every action (state, events, observations via `parse_state`, legal moves,
+  accepted/rejected moves, final results). Longer run: `ENGINE_STRESS_HANDS=20000 pytest tests/test_engine_vs_server.py`.
 
 ### `training/`
 - `model.py` — MLP: concat(state, action) → expected return in big blinds. Shared with `bot/policy.py`.
@@ -74,7 +87,7 @@ The only goal is to win on that server. We train directly on No-Limit Hold'em �
 | Step | What | Done when |
 |---|---|---|
 | 1 | `bot/` connection + rule-based policy | Plays full sessions on a local server, no illegal moves or timeouts (connection ✅, rule policy TODO) |
-| 2 | `engine/` | Hands resolve exactly like on the server; fast enough for self-play |
+| 2 | `engine/` | Hands resolve exactly like on the server; fast enough for self-play ✅ |
 | 3 | `features/` | Unit-tested; the same `Observation` gives the same vector from engine and from server JSON |
 | 4 | `training/` | DMC loss goes down; checkpoints saved |
 | 5 | `eval/` | Trained bot beats the rule-based and always-call bots offline |
@@ -113,7 +126,7 @@ Steps 1 and 2–3 can be built in parallel. Start small (3 players, small MLP, s
 
 ## Conventions
 - Python 3.11+. `pip install -r requirements.txt`. Add libraries there as they're adopted
-  (expected: `numpy`, `torch` for the network, maybe `pokerkit` for the engine). Inference runs on CPU.
+  (`pokerkit` for the engine; expected: `numpy`, `torch` for the network). Inference runs on CPU.
 - Feature branches + PR with one reviewer; `pytest` must pass before merge.
 - Don't commit trained models or logs; share checkpoints out-of-band if large.
 - Changes to `features/` affect both training and the bot — they need group agreement, a bump of
